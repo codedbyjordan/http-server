@@ -24,16 +24,28 @@ pub fn main() !void {
     defer allocator.free(memory);
 
     const bytesRead = try connection.stream.read(&buffer);
-    var splitBytes = mem.splitAny(u8, buffer[0..bytesRead], " ");
+    var splitBytes = mem.splitAny(u8, buffer[0..bytesRead], "\r\n");
 
-    _ = splitBytes.next();
-    const endpoint = splitBytes.next() orelse return;
+    var endpoint: ?[]const u8 = undefined;
+    var userAgent: ?[]const u8 = undefined;
 
-    if (mem.eql(u8, endpoint, "/")) {
+    while (splitBytes.next()) |value| {
+        if (mem.startsWith(u8, value, "GET")) {
+            var splitMethod = mem.splitAny(u8, value, " ");
+            _ = splitMethod.next();
+            endpoint = splitMethod.next();
+        } else if (mem.startsWith(u8, value, "User-Agent")) {
+            userAgent = value[12..];
+        }
+    }
+
+    if (mem.eql(u8, endpoint.?, "/")) {
         _ = try connection.stream.write("HTTP/1.1 200 OK\r\n\r\n");
-    } else if (mem.startsWith(u8, endpoint, "/echo")) {
-        const echoParameter = endpoint[6..];
+    } else if (mem.startsWith(u8, endpoint.?, "/echo")) {
+        const echoParameter = endpoint.?[6..];
         try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ echoParameter.len, echoParameter });
+    } else if (mem.eql(u8, endpoint.?, "/user-agent")) {
+        try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ userAgent.?.len, userAgent.? });
     } else {
         _ = try connection.stream.write("HTTP/1.1 404 Not Found\r\n\r\n");
     }
