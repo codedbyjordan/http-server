@@ -14,9 +14,16 @@ pub fn main() !void {
     defer listener.deinit();
 
     stdout.print("Listening on port {}\n", .{port}) catch unreachable;
+    while (true) {
+        const connection = try listener.accept();
 
-    const connection = try listener.accept();
+        const thread = try std.Thread.spawn(.{}, handleRequest, .{connection});
+        thread.detach();
+    }
+    try stdout.print("client connected!", .{});
+}
 
+fn handleRequest(connection: net.Server.Connection) !void {
     var buffer: [1024]u8 = undefined;
     const allocator = std.heap.page_allocator;
 
@@ -49,6 +56,4 @@ pub fn main() !void {
     } else {
         _ = try connection.stream.write("HTTP/1.1 404 Not Found\r\n\r\n");
     }
-
-    try stdout.print("client connected!", .{});
 }
