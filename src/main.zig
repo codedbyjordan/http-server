@@ -8,6 +8,7 @@ const Request = struct {
     method: []const u8,
     path: []const u8,
     pathParams: std.ArrayList([]const u8),
+    body: []const u8,
 
     pub fn initFromBuffer(buffer: []const u8) !Request {
         var splitBytes = mem.splitAny(u8, buffer, "\r\n");
@@ -16,10 +17,11 @@ const Request = struct {
             .method = undefined,
             .path = undefined,
             .pathParams = std.ArrayList([]const u8).init(std.heap.page_allocator),
+            .body = undefined,
         };
 
         while (splitBytes.next()) |value| {
-            if (mem.startsWith(u8, value, "GET")) {
+            if (mem.startsWith(u8, value, "GET") or mem.startsWith(u8, value, "POST")) {
                 var splitMethod = mem.splitAny(u8, value, " ");
                 request.method = splitMethod.next() orelse return error.InvalidRequest;
                 const fullPath = splitMethod.next() orelse return error.InvalidRequest;
@@ -40,6 +42,8 @@ const Request = struct {
                 const header_name = mem.trim(u8, value[0..colonIndex], " ");
                 const header_value = mem.trim(u8, value[colonIndex + 1 ..], " ");
                 try request.headers.put(header_name, header_value);
+            } else {
+                request.body = value;
             }
         }
 
@@ -53,6 +57,7 @@ const Request = struct {
 };
 
 const http404 = "HTTP/1.1 404 Not Found\r\n\r\n";
+const http500 = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
 
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
@@ -90,10 +95,10 @@ fn handleRequest(connection: net.Server.Connection, directory: []const u8) !void
     var request = try Request.initFromBuffer(buffer[0..bytesRead]);
     defer request.deinit();
 
-    std.debug.print("Requesting path {s}\n", .{request.path});
+    std.debug.print("Requesting {s} /{s}\n", .{ request.method, request.path });
 
     if (mem.eql(u8, request.path, "/")) {
-        _ = try connection.stream.write("HTTP/1.1 200 OK\r\n\r\n");
+        try connection.stream.writeAll("HTTP/1.1 200 OK\r\n\r\n");
     } else if (mem.eql(u8, request.path, "echo")) {
         try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ request.pathParams.items[0].len, request.pathParams.items[0] });
     } else if (mem.eql(u8, request.path, "user-agent")) {
@@ -101,21 +106,29 @@ fn handleRequest(connection: net.Server.Connection, directory: []const u8) !void
     } else if (mem.eql(u8, request.path, "files")) {
         const requestedFile = request.pathParams.items[0];
         const fullFilePath = try std.fs.path.join(std.heap.page_allocator, &[_][]const u8{ directory, requestedFile });
-        const file = std.fs.cwd().openFile(fullFilePath, .{}) catch {
-            _ = try connection.stream.write(http404);
-            return;
-        };
 
-        defer file.close();
+        if (std.mem.eql(u8, request.method, "GET")) {
+            const file = std.fs.cwd().openFile(fullFilePath, .{}) catch {
+                try connection.stream.writeAll(http404);
+                return;
+            };
 
-        // Get the file size
-        const file_size = try file.getEndPos();
+            defer file.close();
 
-        // Allocate memory for the buffer
-        var fileBuffer = try std.heap.page_allocator.alloc(u8, file_size);
-        defer std.heap.page_allocator.free(fileBuffer);
-        const fileBytesRead = try file.readAll(fileBuffer);
-        try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {d}\r\n\r\n{s}", .{ fileBytesRead, fileBuffer[0..fileBytesRead] });
+            // Get the file size
+            const file_size = try file.getEndPos();
+
+            // Allocate memory for the buffer
+            var fileBuffer = try std.heap.page_allocator.alloc(u8, file_size);
+            defer std.heap.page_allocator.free(fileBuffer);
+            const fileBytesRead = try file.readAll(fileBuffer);
+            try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {d}\r\n\r\n{s}", .{ fileBytesRead, fileBuffer[0..fileBytesRead] });
+        } else if (std.mem.eql(u8, request.method, "POST")) {
+            const file = try std.fs.cwd().createFile(fullFilePath, .{ .read = true });
+            defer file.close();
+            try file.writeAll(request.body);
+            try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ request.body.len, request.body });
+        }
     } else {
         _ = try connection.stream.write(http404);
     }
