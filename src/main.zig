@@ -3,9 +3,57 @@ const mem = std.mem;
 
 const net = std.net;
 
+const Request = struct {
+    headers: std.StringHashMap([]const u8),
+    method: []const u8,
+    path: []const u8,
+    pathParams: std.ArrayList([]const u8),
+
+    pub fn initFromBuffer(buffer: []const u8) !Request {
+        var splitBytes = mem.splitAny(u8, buffer, "\r\n");
+        var request = Request{
+            .headers = std.StringHashMap([]const u8).init(std.heap.page_allocator),
+            .method = undefined,
+            .path = undefined,
+            .pathParams = std.ArrayList([]const u8).init(std.heap.page_allocator),
+        };
+
+        while (splitBytes.next()) |value| {
+            if (mem.startsWith(u8, value, "GET")) {
+                var splitMethod = mem.splitAny(u8, value, " ");
+                request.method = splitMethod.next() orelse return error.InvalidRequest;
+                const fullPath = splitMethod.next() orelse return error.InvalidRequest;
+                if (std.mem.eql(u8, fullPath, "/")) {
+                    request.path = "/";
+                } else {
+                    var splitFullPath = mem.splitAny(u8, fullPath, "/");
+
+                    _ = splitFullPath.next();
+
+                    request.path = splitFullPath.next() orelse return error.InvalidRequest;
+
+                    while (splitFullPath.next()) |pathPart| {
+                        try request.pathParams.append(pathPart);
+                    }
+                }
+            } else if (mem.indexOf(u8, value, ":")) |colonIndex| {
+                const header_name = mem.trim(u8, value[0..colonIndex], " ");
+                const header_value = mem.trim(u8, value[colonIndex + 1 ..], " ");
+                try request.headers.put(header_name, header_value);
+            }
+        }
+
+        return request;
+    }
+
+    pub fn deinit(self: *Request) void {
+        self.headers.deinit();
+        self.pathParams.deinit();
+    }
+};
+
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
-    // try stdout.print("Logs from your program will appear here!\n", .{});
     const port = 4221;
     const address = try net.Address.resolveIp("127.0.0.1", port);
     var listener = try address.listen(.{
@@ -14,46 +62,52 @@ pub fn main() !void {
     defer listener.deinit();
 
     stdout.print("Listening on port {}\n", .{port}) catch unreachable;
+
     while (true) {
         const connection = try listener.accept();
-
+        try stdout.print("client connected!\n", .{});
         const thread = try std.Thread.spawn(.{}, handleRequest, .{connection});
         thread.detach();
     }
-    try stdout.print("client connected!", .{});
 }
 
 fn handleRequest(connection: net.Server.Connection) !void {
     var buffer: [1024]u8 = undefined;
-    const allocator = std.heap.page_allocator;
-
-    const memory = try allocator.alloc(u8, 1024);
-    defer allocator.free(memory);
-
     const bytesRead = try connection.stream.read(&buffer);
-    var splitBytes = mem.splitAny(u8, buffer[0..bytesRead], "\r\n");
+    var request = try Request.initFromBuffer(buffer[0..bytesRead]);
+    defer request.deinit();
 
-    var endpoint: ?[]const u8 = undefined;
-    var userAgent: ?[]const u8 = undefined;
+    std.debug.print("Requesting path {s}\n", .{request.path});
 
-    while (splitBytes.next()) |value| {
-        if (mem.startsWith(u8, value, "GET")) {
-            var splitMethod = mem.splitAny(u8, value, " ");
-            _ = splitMethod.next();
-            endpoint = splitMethod.next();
-        } else if (mem.startsWith(u8, value, "User-Agent")) {
-            userAgent = value[12..];
-        }
-    }
-
-    if (mem.eql(u8, endpoint.?, "/")) {
+    if (mem.eql(u8, request.path, "/")) {
         _ = try connection.stream.write("HTTP/1.1 200 OK\r\n\r\n");
-    } else if (mem.startsWith(u8, endpoint.?, "/echo")) {
-        const echoParameter = endpoint.?[6..];
-        try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ echoParameter.len, echoParameter });
-    } else if (mem.eql(u8, endpoint.?, "/user-agent")) {
-        try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ userAgent.?.len, userAgent.? });
+    } else if (mem.eql(u8, request.path, "echo")) {
+        try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ request.path.len, request.path });
+    } else if (mem.eql(u8, request.path, "user-agent")) {
+        try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ request.headers.get("User-Agent").?.len, request.headers.get("User-Agent").? });
+    } else if (mem.eql(u8, request.path, "files")) {
+        const requestedFile = request.pathParams.items[0];
+        const fullFilePath = try std.fs.path.join(std.heap.page_allocator, &[_][]const u8{ "/tmp", requestedFile });
+        const file = std.fs.cwd().openFile(fullFilePath, .{}) catch {
+            _ = try connection.stream.write(create404Response());
+            return;
+        };
+
+        defer file.close();
+
+        // Get the file size
+        const file_size = try file.getEndPos();
+
+        // Allocate memory for the buffer
+        var fileBuffer = try std.heap.page_allocator.alloc(u8, file_size);
+        defer std.heap.page_allocator.free(fileBuffer);
+        const fileBytesRead = try file.readAll(fileBuffer);
+        try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {d}\r\n\r\n{s}", .{ fileBytesRead, fileBuffer[0..fileBytesRead] });
     } else {
-        _ = try connection.stream.write("HTTP/1.1 404 Not Found\r\n\r\n");
+        _ = try connection.stream.write(create404Response());
     }
+}
+
+fn create404Response() []const u8 {
+    return "HTTP/1.1 404 Not Found\r\n\r\n";
 }
