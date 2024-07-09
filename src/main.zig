@@ -52,6 +52,8 @@ const Request = struct {
     }
 };
 
+const http404 = "HTTP/1.1 404 Not Found\r\n\r\n";
+
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     const port = 4221;
@@ -63,15 +65,26 @@ pub fn main() !void {
 
     stdout.print("Listening on port {}\n", .{port}) catch unreachable;
 
+    var args = std.process.args();
+    var directory: []const u8 = "/tmp";
+
+    while (args.next()) |arg| {
+        if (mem.startsWith(u8, arg, "--directory")) {
+            if (args.next()) |dir| {
+                directory = dir;
+            }
+        }
+    }
+
     while (true) {
         const connection = try listener.accept();
         try stdout.print("client connected!\n", .{});
-        const thread = try std.Thread.spawn(.{}, handleRequest, .{connection});
+        const thread = try std.Thread.spawn(.{}, handleRequest, .{ connection, directory });
         thread.detach();
     }
 }
 
-fn handleRequest(connection: net.Server.Connection) !void {
+fn handleRequest(connection: net.Server.Connection, directory: []const u8) !void {
     var buffer: [1024]u8 = undefined;
     const bytesRead = try connection.stream.read(&buffer);
     var request = try Request.initFromBuffer(buffer[0..bytesRead]);
@@ -87,9 +100,9 @@ fn handleRequest(connection: net.Server.Connection) !void {
         try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ request.headers.get("User-Agent").?.len, request.headers.get("User-Agent").? });
     } else if (mem.eql(u8, request.path, "files")) {
         const requestedFile = request.pathParams.items[0];
-        const fullFilePath = try std.fs.path.join(std.heap.page_allocator, &[_][]const u8{ "/tmp", requestedFile });
+        const fullFilePath = try std.fs.path.join(std.heap.page_allocator, &[_][]const u8{ directory, requestedFile });
         const file = std.fs.cwd().openFile(fullFilePath, .{}) catch {
-            _ = try connection.stream.write(create404Response());
+            _ = try connection.stream.write(http404);
             return;
         };
 
@@ -104,10 +117,6 @@ fn handleRequest(connection: net.Server.Connection) !void {
         const fileBytesRead = try file.readAll(fileBuffer);
         try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {d}\r\n\r\n{s}", .{ fileBytesRead, fileBuffer[0..fileBytesRead] });
     } else {
-        _ = try connection.stream.write(create404Response());
+        _ = try connection.stream.write(http404);
     }
-}
-
-fn create404Response() []const u8 {
-    return "HTTP/1.1 404 Not Found\r\n\r\n";
 }
