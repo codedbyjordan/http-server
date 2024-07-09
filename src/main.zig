@@ -95,7 +95,7 @@ fn handleRequest(connection: net.Server.Connection, directory: []const u8) !void
     if (mem.eql(u8, request.path, "/")) {
         _ = try connection.stream.write("HTTP/1.1 200 OK\r\n\r\n");
     } else if (mem.eql(u8, request.path, "echo")) {
-        try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ request.path.len, request.path });
+        try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ request.pathParams.items[0].len, request.pathParams.items[0] });
     } else if (mem.eql(u8, request.path, "user-agent")) {
         try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ request.headers.get("User-Agent").?.len, request.headers.get("User-Agent").? });
     } else if (mem.eql(u8, request.path, "files")) {
