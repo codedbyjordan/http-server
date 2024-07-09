@@ -127,7 +127,7 @@ fn handleRequest(connection: net.Server.Connection, directory: []const u8) !void
             const file = try std.fs.cwd().createFile(fullFilePath, .{ .read = true });
             defer file.close();
             try file.writeAll(request.body);
-            try std.fmt.format(connection.stream.writer(), "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ request.body.len, request.body });
+            try std.fmt.format(connection.stream.writer(), "HTTP/1.1 201 Created\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n{s}", .{ request.body.len, request.body });
         }
     } else {
         _ = try connection.stream.write(http404);
